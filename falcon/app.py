@@ -17,27 +17,27 @@ Base = automap_base()
 Base.prepare(engine,reflect=True)
 Session = sessionmaker()
 session = Session.configure(bind=engine)
-User = Base.classes.users
+
+User = Base.classes.users   #Created tables
 Post = Base.classes.post
 Likes = Base.classes.likes
 
 
 s = Session()
 
-def validate_positive_numbers(func):
-    def wrapper(*args):
-        for value in args:
-            if value < 0:
-                raise ValueError(“arguments must be greater than  equal zero.”)
-        return func(*args)
-    return wrapper
 
-@validate_positive_numbers
-def add(a, b):
-    return a + b
+# def validate_positive_numbers(func):
+#     def wrapper(*args):
+#         for value in args:
+#             if value < 0:
+#                 raise ValueError('arguments must be greater than equal zero')
+#         return func(*args)
+#     return wrapper
 
-print(add(4,4))
-    
+# @validate_positive_numbers
+# def add(a, b):
+#     return a + b
+# print(add(7,5))
 
 
 class RegisterClass:                           # User registering with details
@@ -56,8 +56,6 @@ class RegisterClass:                           # User registering with details
         
         result = s.query(User).filter(User.username==username).first() # Checking for duplicate username in database
         
-    
-
         if not result:                      # Checking password strength
             if not len(no_hash_password) >= 8 \
                 and re.search("^[a-zA-Z0-9]+", no_hash_password) \
@@ -117,259 +115,206 @@ class LoginClass:                           # User logging with their credential
             context['response'] = "Invalid username or password"
             resp.body = json.dumps(context)
 
-
-# def validate_token(func):
-#     def wrapper(*args, **kwargs):
-#         print('hello')
-#     return wrapper
-
-
-class PostCreationClass:                           # User creating a post
-    @validate_token
-    def on_post(self, req, resp):
-        header_data = req.get_header('Authorization')
+def validate_token(func):
+    def wrapper(*args):
+        
+        header_data = args[1].get_header('Authorization')
+        print(header_data)
+        print(args)
         context = {}
-        try:                           # Checking that the token is valid or not
+        try:
             jwt_decode = jwt.decode(header_data, key='secret_key', algorithms=['HS256'])
-            print('valid token exists')
             username = jwt_decode['data']['username']
-            data = json.loads(req.stream.read())
-            title = data['title']
-            description = data['description']
-            tags = data['tags']
-            result = s.query(User).filter(User.username==username).first()
-            user_id = result.id
-            status = 'Unpublished'
-            likes = 0
-            add_post= Post(title=title, description=description, tags=tags, status=status, likes=likes, user_id=user_id)
-            s.add(add_post)
-            s.commit()
-            context['response'] = 'Post created'
-            resp.body = json.dumps(context)
+        
+            
+            return func(username=username, *args)
         except ExpiredSignatureError:
             print('signature expired')
             context['response'] = 'Signature expired Please login again'
-            resp.body = json.dumps(context)
-            resp.status = falcon.HTTP_404
+            args[2].body = json.dumps(context)
+            args[2].status = falcon.HTTP_404
         except InvalidTokenError:
             print('invalid token')
             context['response'] = 'Invalid token please login again'
-            resp.body = json.dumps(context)
-            resp.status = falcon.HTTP_404
+            args[2].body = json.dumps(context)
+            args[2].status = falcon.HTTP_404
+        
+    return wrapper
+
+
+
+class PostCreationClass:
+    @validate_token                           # User creating a post
+    def on_post(self, req, resp, username):
+        context = {}
+        
+        print('token')
+        print(username)    
+        data = json.loads(req.stream.read())
+        title = data['title']
+        description = data['description']
+        tags = data['tags']
+        result = s.query(User).filter(User.username==username).first()
+        user_id = result.id
+        status = 'Unpublished'
+        likes = 0
+        add_post= Post(title=title, description=description, tags=tags, status=status, likes=likes, user_id=user_id)
+        s.add(add_post)
+        s.commit()
+        context['response'] = 'Post created'
+        resp.body = json.dumps(context)
+        
 
 
 class UserPostView:      # User viewing thier published and unpublished posts
     
-    def on_post(self, req, resp):
+    @validate_token
+    def on_post(self, req, resp, username):
         
-        header_data = req.get_header('Authorization')
+       
         context = {}
         li = []
-        try:                           
-            jwt_decode = jwt.decode(header_data, key='secret_key', algorithms=['HS256'])
-            print('valid token exists')
-            username = jwt_decode['data']['username']
+        
              
-            result = s.query(User).filter(User.username==username).first()
-            user_id = result.id
+        result = s.query(User).filter(User.username==username).first()
+        user_id = result.id
 
+        result = s.query(Post).filter(Post.user_id==user_id).all()
+        for post in result:
+            print(post.title)
+            post_dict = {}
+            post_dict['id'] = post.id
+            post_dict['title'] = post.title
+            post_dict['description'] = post.description
+            post_dict['tags'] = post.tags
+            post_dict['status'] = post.status
+            post_dict['likes'] = post.likes
+            li.append(post_dict)
             
-            result = s.query(Post).filter(Post.user_id==user_id).all()
-            for post in result:
-                print(post.title)
-                post_dict = {}
-                post_dict['id'] = post.id
-                post_dict['title'] = post.title
-                post_dict['description'] = post.description
-                post_dict['tags'] = post.tags
-                post_dict['status'] = post.status
-                post_dict['likes'] = post.likes
-                li.append(post_dict)
-            
-            resp.body = json.dumps(li)
-        except ExpiredSignatureError:
-            print('signature expired')
-            context['response'] = 'Signature expired Please login again'
-            resp.body = json.dumps(context)
-            resp.status = falcon.HTTP_404
-        except InvalidTokenError:
-            print('invalid token')
-            context['response'] = 'Invalid token please login again'
-            resp.body = json.dumps(context)
-            resp.status = falcon.HTTP_404
-
+        resp.body = json.dumps(li)
+        
 
 class PublishPost:              # User publishing a created post
-    
-    def on_put(self, req, resp):
-        header_data = req.get_header('Authorization')
+    @validate_token
+    def on_post(self, req, resp, username):
+        
         context = {}
         
-        try:                           
-            jwt_decode = jwt.decode(header_data, key='secret_key', algorithms=['HS256'])
-            print('valid token exists')
-            username = jwt_decode['data']['username']
+        
             
-            data = json.loads(req.stream.read())
-            post_id = data['id']
-            if post_id.isnumeric():
-                result = s.query(User).filter(User.username==username).first()
-                user_id = result.id
+        data = json.loads(req.stream.read())
+        post_id = data['id']
+        if post_id.isnumeric():
+            result = s.query(User).filter(User.username==username).first()
+            user_id = result.id
                 
                 
-                result = s.query(Post).filter(and_(Post.id==post_id, Post.user_id==user_id)).first()
-                if result:
-                    result.status = 'Published'
-                    s.commit()
+            result = s.query(Post).filter(and_(Post.id==post_id, Post.user_id==user_id)).first()
+            if result:
+                result.status = 'Published'
+                s.commit()
 
-                    context['response'] = 'Published'
-                    resp.body = json.dumps(context)
-                else:
-                    context['response'] = 'wrong id'
-                    resp.body = json.dumps(context)
-            else:    
-                context['response'] = 'Wrong post id'
+                context['response'] = 'Published'
                 resp.body = json.dumps(context)
-        except ExpiredSignatureError:
-            print('signature expired')
-            context['response'] = 'Signature expired Please login again'
-            resp.body = json.dumps(context)
-            resp.status = falcon.HTTP_404
-        except InvalidTokenError:
-            print('invalid token')
-            context['response'] = 'Invalid token please login again'
-            resp.body = json.dumps(context)
-            resp.status = falcon.HTTP_404
-            
-
-class UnPublishPost:            # User unpublishing a published post
-    def on_put(self, req, resp):
-        header_data = req.get_header('Authorization')
-        context = {}
-        
-        try:                           
-            jwt_decode = jwt.decode(header_data, key='secret_key', algorithms=['HS256'])
-            print('valid token exists')
-            username = jwt_decode['data']['username']
-            
-            data = json.loads(req.stream.read())
-            post_id = data['id']
-            if post_id.isnumeric():
-                result = s.query(User).filter(User.username==username).first()
-                user_id = result.id
-                
-                result = s.query(Post).filter(and_(Post.id==post_id, Post.user_id==user_id)).first()
-                
-                if result:
-                    result.status = 'Unpublished'
-                    s.commit()
-                
-                
-                    context['response'] = 'unpublished'
-                    resp.body = json.dumps(context)
-                else:
-                    context['response'] = 'wrong id'
-                    resp.body = json.dumps(context)
-               
             else:
-                context['response'] = 'Wrong post id'
+                context['response'] = 'wrong id'
                 resp.body = json.dumps(context)
-        except ExpiredSignatureError:
-            print('signature expired')
-            context['response'] = 'Signature expired Please login again'
+        else:    
+            context['response'] = 'Wrong post id'
             resp.body = json.dumps(context)
-            resp.status = falcon.HTTP_404
-        except InvalidTokenError:
-            print('invalid token')
-            context['response'] = 'Invalid token please login again'
+        
+            
+
+class UnPublishPost:   
+    @validate_token         # User unpublishing a published post
+    def on_post(self, req, resp, username):
+        context = {}
+        data = json.loads(req.stream.read())
+        post_id = data['id']
+        if post_id.isnumeric():
+            result = s.query(User).filter(User.username==username).first()
+            user_id = result.id
+            
+            result = s.query(Post).filter(and_(Post.id==post_id, Post.user_id==user_id)).first()
+            
+            if result:
+                result.status = 'Unpublished'
+                s.commit()
+            
+                context['response'] = 'unpublished'
+                resp.body = json.dumps(context)
+            else:
+                context['response'] = 'wrong id'
+                resp.body = json.dumps(context)
+            
+        else:
+            context['response'] = 'Wrong post id'
             resp.body = json.dumps(context)
-            resp.status = falcon.HTTP_404
+    
 
 
 class AllUsersPost:                 # User viewing posts published by other users
-    
-    def on_post(self, req, resp):
-        header_data = req.get_header('Authorization')
+    @validate_token
+    def on_post(self, req, resp, username):
+        
         context = {}
         li = []
         
-        try:                           
-            jwt_decode = jwt.decode(header_data, key='secret_key', algorithms=['HS256'])
-            print('valid token exists')
-            username = jwt_decode['data']['username']
-            result = s.query(User).filter(User.username==username).first()
-            user_id = result.id
-            
-            
-            result = s.query(Post).filter(and_(Post.user_id!=user_id, Post.status=='Published')).all()
-            for post in result:
-                post_dict = {}
-                post_dict['id'] = post.id
-                post_dict['title'] = post.title
-                post_dict['description'] = post.description
-                post_dict['tags'] = post.tags
-                post_dict['likes'] = post.likes
-                li.append(post_dict)
-            context['response'] = 'published posts'
-            resp.body = json.dumps(li)
-        except ExpiredSignatureError:
-            print('signature expired')
-            context['response'] = 'Signature expired Please login again'
-            resp.body = json.dumps(context)
-            resp.status = falcon.HTTP_404
-        except InvalidTokenError:
-            print('invalid token')
-            context['response'] = 'Invalid token please login again'
-            resp.body = json.dumps(context)
-            resp.status = falcon.HTTP_404
+        
+        result = s.query(User).filter(User.username==username).first()
+        user_id = result.id
+        
+        
+        result = s.query(Post).filter(and_(Post.user_id!=user_id, Post.status=='Published')).all()
+        for post in result:
+            post_dict = {}
+            post_dict['id'] = post.id
+            post_dict['title'] = post.title
+            post_dict['description'] = post.description
+            post_dict['tags'] = post.tags
+            post_dict['likes'] = post.likes
+            li.append(post_dict)
+        context['response'] = 'published posts'
+        resp.body = json.dumps(li)
+        
 
 
 class LikeUnlikePost:                   
-    
-    def on_post(self, req, resp):
-        header_data = req.get_header('Authorization')
+    @validate_token
+    def on_post(self, req, resp, username):
+        
         data = json.loads(req.stream.read())
         post_id = data['id']
         context = {}
         
-        try:                           
-            jwt_decode = jwt.decode(header_data, key='secret_key', algorithms=['HS256'])
-            print('valid token exists')
-            username = jwt_decode['data']['username']
-            result = s.query(User).filter(User.username==username).first()
-            user_id = result.id
-            
-            result = s.query(Likes).filter(and_(post_id==post_id, user_id==user_id)).first()
-            if result is None:
-                add_like = Likes(post_id=post_id, user_id=user_id)
-                s.add(add_like)
-                s.commit()
-                no_of_likes = s.query(Likes).filter(Likes.post_id==post_id).count()
-                post_details= s.query(Post).filter(Post.id==post_id).first()
-                post_details.likes = no_of_likes
-                s.commit()
-                context['response'] = 'Liked'
-                resp.body = json.dumps(context)
-            else:
-                s.delete(result)
-                s.commit()
-                no_of_likes = s.query(Likes).filter(Likes.post_id==post_id).count()
-                post_details= s.query(Post).filter(Post.id==post_id).first()
-                post_details.likes = no_of_likes
-                s.commit()
-                context['response'] = 'Unliked'
-                resp.body = json.dumps(context)
-                print('deleted')
-        except ExpiredSignatureError:
-            print('signature expired')
-            context['response'] = 'Signature expired Please login again'
+        
+        result = s.query(User).filter(User.username==username).first()
+        user_id = result.id
+        print(user_id) 
+        print(post_id)
+        result = s.query(Likes).filter(and_(Likes.post_id==post_id, Likes.user_id==user_id)).first()
+        
+        if result is None:
+            add_like = Likes(post_id=post_id, user_id=user_id)
+            s.add(add_like)
+            s.commit()
+            no_of_likes = s.query(Likes).filter(Likes.post_id==post_id).count()
+            post_details= s.query(Post).filter(Post.id==post_id).first()
+            post_details.likes = no_of_likes
+            s.commit()
+            context['response'] = 'Liked'
             resp.body = json.dumps(context)
-            resp.status = falcon.HTTP_404
-        except InvalidTokenError:
-            print('invalid token')
-            context['response'] = 'Invalid token please login again'
+        else:
+            s.delete(result)
+            s.commit()
+            no_of_likes = s.query(Likes).filter(Likes.post_id==post_id).count()
+            post_details= s.query(Post).filter(Post.id==post_id).first()
+            post_details.likes = no_of_likes
+            s.commit()
+            context['response'] = 'Unliked'
             resp.body = json.dumps(context)
-            resp.status = falcon.HTTP_404
+            print('deleted')
+        
 
 
 
