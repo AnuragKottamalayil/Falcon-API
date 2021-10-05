@@ -1,23 +1,43 @@
 import json, falcon
-import mysql.connector
+from sqlalchemy import create_engine, and_, or_, not_, update, delete
 import hashlib
 import re
 import jwt
 from datetime import datetime, timedelta
 from jwt import ExpiredSignatureError, InvalidTokenError
+from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import Column, Integer, String
+from sqlalchemy.ext.automap import automap_base
+from sqlalchemy.orm import Session, relationship
 
 
-mydb = mysql.connector.connect(               # Connecting to database by mysql connector
-  host="127.0.0.1",
-  user="root",
-  password="268724",
-  database = "socialmedia"
-)
-mycursor = mydb.cursor()
-# mycursor.execute("CREATE TABLE users (name VARCHAR(50), email VARCHAR(50), mobile BIGINT(10), username VARCHAR(50), password VARCHAR(50))")
-# mycursor.execute("ALTER TABLE users ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY")
-# mycursor.execute("CREATE TABLE post (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, title VARCHAR(250), description VARCHAR(250), tags TEXT(), user_id INT, FOREIGN KEY (user_id) REFERENCES users(id))")
+engine = create_engine('postgresql://postgres:postgres@localhost:5432/socialmedia')
+Base = automap_base()
+Base.prepare(engine,reflect=True)
+Session = sessionmaker()
+session = Session.configure(bind=engine)
+User = Base.classes.users
+Post = Base.classes.post
+Likes = Base.classes.likes
 
+
+s = Session()
+
+def validate_positive_numbers(func):
+    def wrapper(*args):
+        for value in args:
+            if value < 0:
+                raise ValueError(“arguments must be greater than  equal zero.”)
+        return func(*args)
+    return wrapper
+
+@validate_positive_numbers
+def add(a, b):
+    return a + b
+
+print(add(4,4))
+    
 
 
 class RegisterClass:                           # User registering with details
@@ -25,7 +45,7 @@ class RegisterClass:                           # User registering with details
     def on_post(self, req, resp):
         data = json.loads(req.stream.read())
         print('helo')
-        sql = "INSERT INTO users (name, email, mobile, username, password) VALUES (%s, %s, %s, %s, %s)"
+       
         context = {}
         name = data['name']
         email = data['email']
@@ -33,10 +53,12 @@ class RegisterClass:                           # User registering with details
         username = data['username']
         no_hash_password = data['password']
         regex = '^[a-z0-9]+[\._]?[a-z0-9]+[@]\w+[.]\w{2,3}$'
-        mycursor.execute("SELECT username FROM users WHERE username = '%s'" % username) # Checking for duplicate username in database
-        result = mycursor.fetchone()
+        
+        result = s.query(User).filter(User.username==username).first() # Checking for duplicate username in database
+        
+    
 
-        if result is None:                      # Checking password strength
+        if not result:                      # Checking password strength
             if not len(no_hash_password) >= 8 \
                 and re.search("^[a-zA-Z0-9]+", no_hash_password) \
                 and re.search("[a-z]+", no_hash_password) \
@@ -56,11 +78,10 @@ class RegisterClass:                           # User registering with details
                 passwrd = hashlib.sha256(encoded_password)
                 password = passwrd.hexdigest()
                 print(password)
-                val = (name, email, mobile, username, password)
-                mycursor.execute(sql, val)
-
-                mydb.commit()
-                print(mycursor.rowcount, "record inserted.")
+                add_user = User(name=name, username=username, ph_number=mobile, password=password, email=email)
+                s.add(add_user)
+                s.commit()
+                
                 context["response"] = 'Account created successfully'
                 resp.body = json.dumps(context)
                 resp.status = falcon.HTTP_200
@@ -81,10 +102,9 @@ class LoginClass:                           # User logging with their credential
         passwrd = hashlib.sha256(encoded_password)
         password = passwrd.hexdigest()    
         
-        mycursor.execute("SELECT username, password FROM USERS WHERE username='%s' AND password='%s'" % (username, password))
-        result = mycursor.fetchone()
-        print("result", result)
-        if result is not None:
+        result = s.query(User).filter(and_(User.username==username, User.password==password)).first()
+        print(result)
+        if result:
             datas = {
                 "username":username,
             }
@@ -98,8 +118,14 @@ class LoginClass:                           # User logging with their credential
             resp.body = json.dumps(context)
 
 
+# def validate_token(func):
+#     def wrapper(*args, **kwargs):
+#         print('hello')
+#     return wrapper
+
+
 class PostCreationClass:                           # User creating a post
-    
+    @validate_token
     def on_post(self, req, resp):
         header_data = req.get_header('Authorization')
         context = {}
@@ -111,17 +137,13 @@ class PostCreationClass:                           # User creating a post
             title = data['title']
             description = data['description']
             tags = data['tags']
-            mycursor.execute("SELECT id FROM users WHERE username = '%s'" % username)
-            id = mycursor.fetchone()
-            user_id = id[0]
+            result = s.query(User).filter(User.username==username).first()
+            user_id = result.id
             status = 'Unpublished'
             likes = 0
-            sql ="INSERT INTO post (title, description, tags, user_id, status, likes) VALUES (%s, %s, %s, %s, %s, %s)"
-            val = (title, description, tags, user_id, status, likes)
-            mycursor.execute(sql, val)
-            mydb.commit()
-            print(mycursor.rowcount, "record inserted.")
-            print(mycursor)
+            add_post= Post(title=title, description=description, tags=tags, status=status, likes=likes, user_id=user_id)
+            s.add(add_post)
+            s.commit()
             context['response'] = 'Post created'
             resp.body = json.dumps(context)
         except ExpiredSignatureError:
@@ -148,18 +170,20 @@ class UserPostView:      # User viewing thier published and unpublished posts
             print('valid token exists')
             username = jwt_decode['data']['username']
              
-            mycursor.execute("SELECT id FROM users WHERE username = '%s'" % username)
-            id = mycursor.fetchone()
-            user_id = id[0]
-            mycursor.execute("SELECT * FROM post WHERE user_id='%s'" % user_id)
-            for post in mycursor:
+            result = s.query(User).filter(User.username==username).first()
+            user_id = result.id
+
+            
+            result = s.query(Post).filter(Post.user_id==user_id).all()
+            for post in result:
+                print(post.title)
                 post_dict = {}
-                post_dict['id'] = post[0]
-                post_dict['title'] = post[1]
-                post_dict['description'] = post[2]
-                post_dict['tags'] = post[3]
-                post_dict['status'] = post[5]
-                post_dict['likes'] = post[6]
+                post_dict['id'] = post.id
+                post_dict['title'] = post.title
+                post_dict['description'] = post.description
+                post_dict['tags'] = post.tags
+                post_dict['status'] = post.status
+                post_dict['likes'] = post.likes
                 li.append(post_dict)
             
             resp.body = json.dumps(li)
@@ -189,21 +213,21 @@ class PublishPost:              # User publishing a created post
             data = json.loads(req.stream.read())
             post_id = data['id']
             if post_id.isnumeric():
-                mycursor.execute("SELECT id FROM users WHERE username = '%s'" % username)
-                id = mycursor.fetchone()
-                user_id = id[0]
+                result = s.query(User).filter(User.username==username).first()
+                user_id = result.id
                 
-                mycursor.execute("UPDATE post SET status='%s' WHERE id='%s' AND user_id='%s'" % ('Published', post_id, user_id))
-                mydb.commit()
                 
-                print(mycursor.rowcount, 'row updated')
-                if mycursor.rowcount == 1:
-                    context['response'] = 'Post published'
+                result = s.query(Post).filter(and_(Post.id==post_id, Post.user_id==user_id)).first()
+                if result:
+                    result.status = 'Published'
+                    s.commit()
+
+                    context['response'] = 'Published'
                     resp.body = json.dumps(context)
                 else:
-                    context['response'] = 'not updated'
+                    context['response'] = 'wrong id'
                     resp.body = json.dumps(context)
-            else:
+            else:    
                 context['response'] = 'Wrong post id'
                 resp.body = json.dumps(context)
         except ExpiredSignatureError:
@@ -231,20 +255,22 @@ class UnPublishPost:            # User unpublishing a published post
             data = json.loads(req.stream.read())
             post_id = data['id']
             if post_id.isnumeric():
-                mycursor.execute("SELECT id FROM users WHERE username = '%s'" % username)
-                id = mycursor.fetchone()
-                user_id = id[0]
+                result = s.query(User).filter(User.username==username).first()
+                user_id = result.id
                 
-                mycursor.execute("UPDATE post SET status='%s' WHERE id='%s' AND user_id='%s'" % ('Unublished', post_id, user_id))
-                mydb.commit()
+                result = s.query(Post).filter(and_(Post.id==post_id, Post.user_id==user_id)).first()
                 
-                print(mycursor.rowcount, 'row updated')
-                if mycursor.rowcount == 1:
-                    context['response'] = 'Post Unpublished'
+                if result:
+                    result.status = 'Unpublished'
+                    s.commit()
+                
+                
+                    context['response'] = 'unpublished'
                     resp.body = json.dumps(context)
                 else:
-                    context['response'] = 'not updated'
+                    context['response'] = 'wrong id'
                     resp.body = json.dumps(context)
+               
             else:
                 context['response'] = 'Wrong post id'
                 resp.body = json.dumps(context)
@@ -271,18 +297,18 @@ class AllUsersPost:                 # User viewing posts published by other user
             jwt_decode = jwt.decode(header_data, key='secret_key', algorithms=['HS256'])
             print('valid token exists')
             username = jwt_decode['data']['username']
-            mycursor.execute("SELECT id FROM users WHERE username = '%s'" % username)
-            id = mycursor.fetchone()
-            user_id = id[0]
+            result = s.query(User).filter(User.username==username).first()
+            user_id = result.id
             
-            mycursor.execute("SELECT * FROM POST WHERE user_id !='%s' AND status='Published'" % user_id)
-            for post in mycursor:
+            
+            result = s.query(Post).filter(and_(Post.user_id!=user_id, Post.status=='Published')).all()
+            for post in result:
                 post_dict = {}
-                post_dict['id'] = post[0]
-                post_dict['title'] = post[1]
-                post_dict['description'] = post[2]
-                post_dict['tags'] = post[3]
-                post_dict['likes'] = post[6]
+                post_dict['id'] = post.id
+                post_dict['title'] = post.title
+                post_dict['description'] = post.description
+                post_dict['tags'] = post.tags
+                post_dict['likes'] = post.likes
                 li.append(post_dict)
             context['response'] = 'published posts'
             resp.body = json.dumps(li)
@@ -310,39 +336,30 @@ class LikeUnlikePost:
             jwt_decode = jwt.decode(header_data, key='secret_key', algorithms=['HS256'])
             print('valid token exists')
             username = jwt_decode['data']['username']
-            mycursor.execute("SELECT id FROM users WHERE username = '%s'" % username)
-            id = mycursor.fetchone()
-            user_id = id[0]
-            mycursor.execute("SELECT post_id FROM likes WHERE post_id='%s' AND user_id='%s'" % (post_id, user_id))
-            result = mycursor.fetchone()
+            result = s.query(User).filter(User.username==username).first()
+            user_id = result.id
+            
+            result = s.query(Likes).filter(and_(post_id==post_id, user_id==user_id)).first()
             if result is None:
-                sql ="INSERT INTO likes (post_id, user_id) VALUES (%s, %s)"
-                val = (post_id, user_id)
-                mycursor.execute(sql, val)
-                mydb.commit()
-                mycursor.execute("SELECT COUNT(*) FROM likes WHERE post_id='%s'" % post_id)
-                rows = mycursor.fetchone()
-                no_of_likes = rows[0]
-                sql = ("UPDATE post SET likes='%s' WHERE id='%s'" % (no_of_likes, post_id))
-                
-                mycursor.execute(sql)
-                mydb.commit()
-                context['response'] = 'liked'
+                add_like = Likes(post_id=post_id, user_id=user_id)
+                s.add(add_like)
+                s.commit()
+                no_of_likes = s.query(Likes).filter(Likes.post_id==post_id).count()
+                post_details= s.query(Post).filter(Post.id==post_id).first()
+                post_details.likes = no_of_likes
+                s.commit()
+                context['response'] = 'Liked'
                 resp.body = json.dumps(context)
             else:
-                
-                mycursor.execute("DELETE FROM likes WHERE post_id='%s' AND user_id='%s'" % (post_id, user_id))
-                mydb.commit()
-                mycursor.execute("SELECT COUNT(*) FROM likes WHERE post_id='%s'" % post_id)
-                rows = mycursor.fetchone()
-                no_of_likes = rows[0]
-                sql = ("UPDATE post SET likes='%s' WHERE id='%s'" % (no_of_likes, post_id))
-                
-                mycursor.execute(sql)
-                mydb.commit()
-    
+                s.delete(result)
+                s.commit()
+                no_of_likes = s.query(Likes).filter(Likes.post_id==post_id).count()
+                post_details= s.query(Post).filter(Post.id==post_id).first()
+                post_details.likes = no_of_likes
+                s.commit()
                 context['response'] = 'Unliked'
                 resp.body = json.dumps(context)
+                print('deleted')
         except ExpiredSignatureError:
             print('signature expired')
             context['response'] = 'Signature expired Please login again'
