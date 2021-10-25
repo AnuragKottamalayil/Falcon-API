@@ -11,7 +11,7 @@ from sqlalchemy import Column, Integer, String
 from sqlalchemy.ext.automap import automap_base
 from sqlalchemy.orm import Session, relationship
 from datetime import date
-
+import msgpack
 
 engine = create_engine('postgresql://postgres:postgres@localhost:5432/socialmedia')
 Base = automap_base()
@@ -103,77 +103,87 @@ getdate()
 class RegisterClass:                           # User registering with details
     
     def on_post(self, req, resp):
-        data = json.loads(req.stream.read())
-        print('helo')
-       
-        context = {}
-        name = data['name']
-        email = data['email']
-        mobile = data['mobile']
-        username = data['username']
-        no_hash_password = data['password']
-        regex = '^[a-z0-9]+[\._]?[a-z0-9]+[@]\w+[.]\w{2,3}$'
-        
-        result = s.query(User).filter(User.username==username).first() # Checking for duplicate username in database
-        
-        if not result:                      # Checking password strength
-            if not len(no_hash_password) >= 8 \
-                and re.search("^[a-zA-Z0-9]+", no_hash_password) \
-                and re.search("[a-z]+", no_hash_password) \
-                and re.search("[A-Z]+", no_hash_password) \
-                and re.search("[0-9]+", no_hash_password):
-                print('weakpassword')
-                context['response'] = 'Weakpassword'
-                resp.body = json.dumps(context)
-                resp.status = falcon.HTTP_404
+        try:
+            
+            data = json.loads(req.bounded_stream.read())
+            
+            context = {}
+            name = data['name']
+            email = data['email']
+            mobile = data['mobile']
+            username = data['username']
+            no_hash_password = data['password']
+            regex = '^[a-z0-9]+[\._]?[a-z0-9]+[@]\w+[.]\w{2,3}$'
+            
+            result = s.query(User).filter(User.username==username).first() # Checking for duplicate username in database
+            
+            if not result:                      # Checking password strength
+                if not len(no_hash_password) >= 8 \
+                    and re.search("^[a-zA-Z0-9]+", no_hash_password) \
+                    and re.search("[a-z]+", no_hash_password) \
+                    and re.search("[A-Z]+", no_hash_password) \
+                    and re.search("[0-9]+", no_hash_password):
+                    print('weakpassword')
+                    context['response'] = 'Weakpassword'
+                    resp.body = json.dumps(context)
+                    resp.status = falcon.HTTP_400
 
-            elif not (re.search(regex,email)):          # Validating email
-                context['response'] = 'Please enter a valid email'
-                resp.body = json.dumps(context)
-                resp.status = falcon.HTTP_404
+                elif not (re.search(regex,email)):          # Validating email
+                    context['response'] = 'Please enter a valid email'
+                    resp.body = json.dumps(context)
+                    resp.status = falcon.HTTP_400
+                else:
+                    encoded_password = no_hash_password.encode()
+                    passwrd = hashlib.sha256(encoded_password)
+                    password = passwrd.hexdigest()
+                    print(password)
+                    add_user = User(name=name, username=username, ph_number=mobile, password=password, email=email)
+                    s.add(add_user)
+                    s.commit()
+                    
+                    context["response"] = 'Account created successfully'
+                    resp.body = json.dumps(context)
+                    resp.status = falcon.HTTP_200
             else:
-                encoded_password = no_hash_password.encode()
-                passwrd = hashlib.sha256(encoded_password)
-                password = passwrd.hexdigest()
-                print(password)
-                add_user = User(name=name, username=username, ph_number=mobile, password=password, email=email)
-                s.add(add_user)
-                s.commit()
-                
-                context["response"] = 'Account created successfully'
+                context['response'] = 'Username already exists'
                 resp.body = json.dumps(context)
-                resp.status = falcon.HTTP_200
-        else:
-            context['response'] = 'Username already exists'
-            resp.body = json.dumps(context)
+                resp.status = falcon.HTTP_400
+        except Exception as e:
+            print(e)
+            resp.status = falcon.HTTP_500
 
 
 class LoginClass:                           # User logging with their credentials
     
     def on_post(self, req, resp):
-        context = {}
-        data = json.loads(req.stream.read())
-        username = data['username']
-        
-        no_hash_password = data['password']
-        encoded_password = no_hash_password.encode()       # Generating a hashed password
-        passwrd = hashlib.sha256(encoded_password)
-        password = passwrd.hexdigest()    
-        
-        result = s.query(User).filter(and_(User.username==username, User.password==password)).first()
-        print(result)
-        if result:
-            datas = {
-                "username":username,
-            }
-            # Generating a jwt token if username and password are valid
-            encoded_jwt_token = jwt.encode({"data":datas, "exp":datetime.utcnow() + timedelta(hours=24)}, "secret_key", algorithm="HS256")
-            context['token'] = encoded_jwt_token
-            context['response'] = 'Logged in'
-            resp.body = json.dumps(context)
-        else:
-            context['response'] = "Invalid username or password"
-            resp.body = json.dumps(context)
+        try:
+            context = {}
+            data = json.loads(req.bounded_stream.read())
+            username = data['username']
+            
+            no_hash_password = data['password']
+            encoded_password = no_hash_password.encode()       # Generating a hashed password
+            passwrd = hashlib.sha256(encoded_password)
+            password = passwrd.hexdigest()    
+            
+            result = s.query(User).filter(and_(User.username==username, User.password==password)).first()
+            print(result)
+            if result:
+                datas = {
+                    "username":username,
+                }
+                # Generating a jwt token if username and password are valid
+                encoded_jwt_token = jwt.encode({"data":datas, "exp":datetime.utcnow() + timedelta(hours=24)}, "secret_key", algorithm="HS256")
+                context['token'] = encoded_jwt_token
+                context['response'] = 'Logged in'
+                resp.body = json.dumps(context)
+                resp.status = falcon.HTTP_200
+            else:
+                context['response'] = "Invalid username or password"
+                resp.body = json.dumps(context)
+                resp.status = falcon.HTTP_400
+        except:
+            resp.status = falcon.HTTP_500
 
 def validate_token(func):
     def wrapper(*args):
@@ -375,7 +385,10 @@ class LikeUnlikePost:
             resp.body = json.dumps(context)
             print('deleted')
         
-
+class Sample:
+    def on_get(self, req, resp):
+        
+        resp.status = falcon.HTTP_200
 
 
 app = falcon.API()
@@ -387,3 +400,4 @@ app.add_route('/PublishPost', PublishPost())
 app.add_route('/UnpublishPost', UnPublishPost())
 app.add_route('/AllUserPost', AllUsersPost())
 app.add_route('/LikeUnlikePost', LikeUnlikePost())
+app.add_route('/sample', Sample())
